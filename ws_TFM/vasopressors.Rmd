@@ -1,0 +1,541 @@
+---
+title: "TRABAJO FIN DE MÁSTER: DETECCIÓN TEMPRANA DE SEPSIS"
+output: html_notebook
+---
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+**Autor:** Jesús Guerrero Quirós
+
+**Tutores del trabajo:** Juan Antonio Nepomuceno Chamorro y Juan Antonio Nepomuceno Chamorro
+
+**Titulación:** Máster Oficial en Ingeniería Biomédica y Salud Digital
+
+**Centro:** Escuela Técnica Superior de Ingeniería Informática
+
+Universidad de Sevilla | Curso 2022/2023
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+
+# **VARIABLE: VASOPRESSORS**
+
+En este notebook se llevará a cabo el estudio de la variable objetivo *Vasopressors*. Esta variable indica la presencia - o no - de vasopresores, que se necesitan cuando se produce un shock séptico.
+
+Por lo tanto, indirectamente, nos está indicando si el paciente sufre un shock séptico.
+
+Se trata de una variable categórica binaria, que puede adquirir los siguientes valores:
+
++ 1 = SÍ
++ 2 = NO
+
+Al tratarse de una variable categórica, aplicaremos algoritmos de **clasificación.**
+
+
+```{r}
+rm(list = ls())
+```
+
+
+```{r}
+library(AlgDesign)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+library(powerMediation)
+library(readr)
+library(tidyverse)
+library(arules)
+library(caret)
+library(rpart)
+library(rattle)
+library(RColorBrewer)
+library(ROCR)
+```
+
+
+## **1. CARGA DE DATOS**
+
+Utilizaremos el dataset ya cargado del notebook de introducción, ya que incluye varias modificaciones que son necesarias para avanzar.
+
+```{r}
+data_vasopressor <- dataset
+```
+
+
+Como en este notebook vamos a tomar la variable *Vasopressors* como variable dependiente, es conveniente eliminar las demás variables objetivo:
+
+
+```{r}
+data_vasopressor <- data_vasopressor %>%
+  mutate(SOFA.score = NULL) %>%
+  mutate(Outcome = NULL)
+```
+
+
+Así, nos queda un dataset con 36 variables, siendo solamente una de ellas la variable dependiente: *Vasopressors*.
+
+```{r}
+dim(data_vasopressor)
+```
+
+Cambiamos el valor de la variable dependiente por valores que no sean numéricos:
+
+```{r}
+data_vasopressor <- data_vasopressor %>%
+  mutate(Vasopressors = ifelse(Vasopressors==1, "SI", "NO"))
+```
+
+
+
+
+## **2. VALIDACIÓN CRUZADA**
+
+Antes de comenzar con los algoritmos de clasificación y regresión, vamos a aplicar validación cruzada con ayuda de la función **trainControl** del paquete Caret:
+
+
+```{r}
+CV_vasopressors <- trainControl(method = "cv", 
+                                number = 10, 
+                                summaryFunction = twoClassSummary, 
+                                classProbs = TRUE,
+                                savePredictions = TRUE,
+                                verbose = FALSE)
+```
+
+
+```{r}
+help("trainControl")
+```
+
+
+
+## **3. ENTRENAMIENTO Y TEST**
+
+A continuación, dividiremos nuestro dataset en dos conjuntos: entrenamiento y test. En este caso, vamos a establecer un 70% para training y un 30% para test.
+
+```{r}
+help("createDataPartition")
+```
+
+
+```{r}
+set.seed(14)
+
+indice <- createDataPartition(data_vasopressor$Vasopressors, p=0.70, list = FALSE)  # Partición de los datos
+train_vasopressor <- data_vasopressor[indice,]  # Dataset de entrenamiento
+test_vasopressor <- data_vasopressor[-indice,]  # Dataset de test
+```
+
+
+
+## **4. ÁRBOL DE DECISIÓN**
+
+
+En primer lugar, entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+vasopressors_tree_train <- train(as.factor(Vasopressors) ~ ., 
+                  data = train_vasopressor, 
+                  method = "rpart", 
+                  trControl = CV_vasopressors,
+                  metric = "ROC")
+```
+
+
+Representamos gráficamente el árbol de decisión resultante del entrenamiento:
+
+
+```{r}
+suppressMessages(library(rattle))
+```
+
+
+```{r}
+fancyRpartPlot(vasopressors_tree_train$finalModel)
+```
+
+
+Utilizamos el modelo para predecir sobre el conjunto de test:
+
+```{r}
+vasopressors_tree_predict <- predict(vasopressors_tree_train, test_vasopressor)
+```
+
+
+Creamos la matriz de confusión:
+
+```{r}
+matriz_tree_vasopressors <- confusionMatrix(as.factor(vasopressors_tree_predict), 
+                                            as.factor(test_vasopressor$Vasopressors), 
+                                            mode = "everything")
+matriz_tree_vasopressors
+```
+
+
+Vamos a calcular también el área bajo la curva:
+
+```{r}
+library(pROC)
+```
+
+
+```{r}
+ROC_dt_vasopressors <- roc(factor(test_vasopressor$Vasopressors), factor(vasopressors_tree_predict, ordered = TRUE))
+```
+
+```{r}
+plot.roc(ROC_dt_vasopressors, print.auc = T, print.thres = "best", xlab = "Sensibilidad", ylab = "Especificidad")
+```
+
+
+#### **5. RANDOM FOREST**
+
+
+En primer lugar, entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+vasopressors_forest_train <- train(as.factor(Vasopressors) ~ ., 
+                  data = train_vasopressor, 
+                  method = "rf", 
+                  trControl = CV_vasopressors,
+                  metric = "ROC")
+```
+
+
+Utilizamos el modelo para predecir sobre el conjunto de test:
+
+```{r}
+vasopressors_forest_predict <- predict(vasopressors_forest_train, test_vasopressor)
+```
+
+
+Creamos la matriz de confusión:
+
+```{r}
+matriz_forest_vasopressors <- confusionMatrix(as.factor(vasopressors_forest_predict), 
+                                            as.factor(test_vasopressor$Vasopressors), 
+                                            mode = "everything")
+matriz_forest_vasopressors
+```
+
+Vamos a calcular también el área bajo la curva:
+
+```{r}
+ROC_forest_vasopressors <- roc(factor(test_vasopressor$Vasopressors), factor(vasopressors_forest_predict, ordered = TRUE))
+```
+
+
+```{r}
+plot.roc(ROC_forest_vasopressors, print.auc = T, print.thres = "best", xlab = "Sensibilidad", ylab = "Especificidad")
+```
+
+
+
+#### **6. k-NN**
+
+Para el algoritmo kNN (k vecinos más cercanos) es importante tener en cuenta una consideración previa: este algoritmo calcula la similitud entre variables usando la **distancia** entre las mismas. Esto significa que dichas distancias deben ser comparables, y los rangos de valores entre las variables deben ser similares.
+
+Esto implica que debemos **normalizar** algunas de nuestras variables para que funcione el algoritmo. Una manera de hacerlo es definiendo una función y luego aplicarla para las columnas correspondientes de nuestro dataset:
+
+
+```{r}
+normalizar <- function(variable){
+  (variable - min(variable)) / (max(variable) - min(variable))
+}
+```
+
+
+```{r}
+datos_normalizados <- data_vasopressor
+```
+
+
+```{r}
+datos_normalizados$Age <- normalizar(datos_normalizados$Age)  # Normalización: EDAD
+datos_normalizados$Initial.PCT.value <- normalizar(datos_normalizados$Initial.PCT.value)  # Normalización: PCT VALUE
+datos_normalizados$PaO2 <- normalizar(datos_normalizados$PaO2)  # Normalización: PaO2
+datos_normalizados$FiO2 <- normalizar(datos_normalizados$FiO2)  # Normalización: FiO2
+datos_normalizados$Platelets <- normalizar(datos_normalizados$Platelets)  # Normalización: PLATELETS
+datos_normalizados$Bilirubin <- normalizar(datos_normalizados$Bilirubin)  # Normalización: BILIRUBIN
+datos_normalizados$GCS <- normalizar(datos_normalizados$GCS)  # Normalización: GCS
+datos_normalizados$MAP <- normalizar(datos_normalizados$MAP)  # Normalización: MAP
+datos_normalizados$Creatinine <- normalizar(datos_normalizados$Creatinine)  # Normalización: CREATININE
+datos_normalizados$UOP <- normalizar(datos_normalizados$UOP)  # Normalización: UOP
+datos_normalizados$LOS <- normalizar(datos_normalizados$LOS)  # Normalización: LOS
+
+```
+
+
+```{r}
+train_vasopressor_knn <- datos_normalizados[indice,]
+test_vasopressor_knn <- datos_normalizados[-indice,]
+```
+
+
+
+
+En primer lugar, entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+vasopressors_knn_train_accu <- train(as.factor(Vasopressors) ~ ., 
+                  data = train_vasopressor, 
+                  method = "knn", 
+                  trControl = trainControl(method = "cv"),
+                  tuneLength = 20)
+```
+
+
+```{r}
+vasopressors_knn_train_accu
+```
+
+```{r}
+plot(vasopressors_knn_train_accu)
+```
+
+
+Repetimos el algoritmo, pero tomando ROC como métrica:
+
+
+```{r}
+set.seed(14)
+vasopressors_knn_train_ROC <- train(as.factor(Vasopressors) ~ ., 
+                  data = train_vasopressor, 
+                  method = "knn", 
+                  trControl = CV_vasopressors,
+                  metric = "ROC",
+                  tuneLength = 20)
+```
+
+
+```{r}
+vasopressors_knn_train_ROC
+```
+
+
+```{r}
+plot(vasopressors_knn_train_ROC)
+```
+
+
+Utilizamos el modelo para predecir sobre el conjunto de test:
+
+```{r}
+vasopressors_knn_predict <- predict(vasopressors_knn_train_ROC, test_vasopressor_knn)
+```
+
+
+
+```{r}
+matriz_knn_vasopressors <- confusionMatrix(as.factor(vasopressors_knn_predict), 
+                                            as.factor(test_vasopressor$Vasopressors), 
+                                            mode = "everything")
+matriz_knn_vasopressors
+```
+
+
+Vamos a calcular también el área bajo la curva:
+
+```{r}
+ROC_knn_vasopressors <- roc(factor(test_vasopressor$Vasopressors), factor(vasopressors_knn_predict, ordered = TRUE))
+```
+
+
+```{r}
+plot.roc(ROC_knn_vasopressors, print.auc = T, print.thres = "best", xlab = "Sensibilidad", ylab = "Especificidad")
+```
+
+
+#### **7. NAIVE-BAYES**
+
+Instalamos las librerías necesarias para aplicar el algoritmo:
+
+```{r}
+library("klaR")
+```
+
+
+```{r}
+library(e1071)
+```
+
+
+Entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+vasopressors_nb_train <- train(as.factor(Vasopressors) ~ .,
+                          data = train_vasopressor,
+                          method = "nb", 
+                          trControl = CV_vasopressors,
+                          metric = "ROC",
+                          tuneLength = 20)
+```
+
+A continuación podemos ver el resultado del entrenamiento:
+
+```{r}
+vasopressors_nb_train
+```
+
+
+```{r}
+vasopressors_nb_predict <- predict(vasopressors_nb_train, test_vasopressor)
+```
+
+
+Creamos la matriz de confusión:
+
+```{r}
+matriz_nb_vasopressors <- confusionMatrix(as.factor(vasopressors_nb_predict), 
+                                            as.factor(test_vasopressor$Vasopressors), 
+                                            mode = "everything")
+matriz_nb_vasopressors
+```
+
+
+
+Vamos a calcular también el área bajo la curva:
+
+```{r}
+ROC_nb_vasopressors <- roc(factor(test_vasopressor$Vasopressors), factor(vasopressors_nb_predict, ordered = TRUE))
+```
+
+
+```{r}
+plot.roc(ROC_nb_vasopressors, print.auc = T, print.thres = "best", xlab = "Sensibilidad", ylab = "Especificidad")
+```
+
+
+
+
+## **8. MÁQUINA DE VECTORES DE SOPORTE LINEAL**
+
+
+En primer lugar, entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+vasopressors_SVM_train <- train(as.factor(Vasopressors) ~ ., 
+                  data = train_vasopressor, 
+                  method = "svmLinear", 
+                  trControl = CV_vasopressors,
+                  metric = "ROC",
+                  tuneLength = 20)
+```
+
+
+```{r}
+vasopressors_SVM_train
+```
+
+Utilizamos el modelo para predecir sobre el conjunto de test:
+
+```{r}
+vasopressors_SVM_predict <- predict(vasopressors_SVM_train, test_vasopressor)
+```
+
+
+
+Creamos la matriz de confusión:
+
+```{r}
+matriz_SVM_vasopressors <- confusionMatrix(as.factor(vasopressors_SVM_predict), 
+                                            as.factor(test_vasopressor$Vasopressors), 
+                                            mode = "everything")
+matriz_SVM_vasopressors
+```
+
+
+```{r}
+ROC_SVM_vasopressors <- roc(factor(test_vasopressor$Vasopressors), factor(vasopressors_SVM_predict, ordered = TRUE))
+```
+
+
+```{r}
+plot.roc(ROC_SVM_vasopressors, print.auc = T, print.thres = "best", xlab = "Sensibilidad", ylab = "Especificidad")
+```
+
+
+
+## **9. MÁQUINA DE VECTORES DE SOPORTE KERNEL**
+
+
+En primer lugar, entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+vasopressors_kernel_train <- train(as.factor(Vasopressors) ~ ., 
+                  data = train_vasopressor, 
+                  method = "svmRadial", 
+                  trControl = CV_vasopressors,
+                  metric = "ROC",
+                  tuneLength = 20)
+```
+
+
+```{r}
+vasopressors_kernel_train
+```
+
+Utilizamos el modelo para predecir sobre el conjunto de test:
+
+```{r}
+vasopressors_kernel_predict <- predict(vasopressors_kernel_train, test_vasopressor)
+```
+
+
+
+Creamos la matriz de confusión:
+
+```{r}
+matriz_kernel_vasopressors <- confusionMatrix(as.factor(vasopressors_kernel_predict), 
+                                            as.factor(test_vasopressor$Vasopressors), 
+                                            mode = "everything")
+matriz_kernel_vasopressors
+```
+
+
+```{r}
+ROC_kernel_vasopressors <- roc(factor(test_vasopressor$Vasopressors), factor(vasopressors_kernel_predict, ordered = TRUE))
+```
+
+
+```{r}
+plot.roc(ROC_kernel_vasopressors, print.auc = T, print.thres = "best", xlab = "Sensibilidad", ylab = "Especificidad")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+---------------------
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

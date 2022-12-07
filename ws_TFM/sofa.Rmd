@@ -1,0 +1,362 @@
+---
+title: "TRABAJO FIN DE MÁSTER: DETECCIÓN TEMPRANA DE SEPSIS"
+output: html_notebook
+---
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+**Autor:** Jesús Guerrero Quirós
+
+**Tutores del trabajo:** Juan Antonio Nepomuceno Chamorro y Juan Antonio Nepomuceno Chamorro
+
+**Titulación:** Máster Oficial en Ingeniería Biomédica y Salud Digital
+
+**Centro:** Escuela Técnica Superior de Ingeniería Informática
+
+Universidad de Sevilla | Curso 2022/2023
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+
+# **VARIABLE: SOFA**
+
+En este notebook se llevará a cabo el estudio de la variable objetivo *SOFA*. Esta variable consiste en un sistema de medición de fallo orgánico múltiple. Para ello, se analizan 6 posibles disfunciones: respiración, coagulación, hígado, cardiovascular, sistema nervioso central y renal.
+
+Cada una de esas disfunciones adquiere una puntuación de 0 (normal) a 4 (anormal), y la puntuación final es la suma de los puntos obtenidos por todas las posibles disfunciones. De esta manera, la puntuación final será un valor entre 0 y 24.
+
+Es un sistema de predicción muy útil, ya que permite predecir la tasa de mortalidad del paciente. Por ejemplo, un aumento en la puntuación SOFA durante las primeras 48 horas en la UCI se traduce en una tasa de mortalidad del 50%.
+
+Al tratarse de una variable numérica, aplicaremos técnicas de *regresión.*
+
+
+```{r}
+rm(list = ls())
+```
+
+
+```{r}
+library(AlgDesign)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+library(powerMediation)
+library(readr)
+library(tidyverse)
+library(arules)
+library(caret)
+library(rpart)
+library(rattle)
+library(RColorBrewer)
+library(ROCR)
+```
+
+
+## **1. CARGA DE DATOS**
+
+Utilizaremos el dataset ya cargado del notebook de introducción, y realizaremos las modificaciones necesarias para avanzar.
+
+```{r}
+data_SOFA <- dataset
+```
+
+
+Como en este notebook vamos a tomar la variable *SOFA* como variable dependiente, es conveniente eliminar las demás variables objetivo:
+
+
+```{r}
+data_SOFA <- data_SOFA %>%
+  mutate(Outcome = NULL) %>%
+  mutate(Vasopressors = NULL)
+```
+
+
+Así, nos queda un dataset con 36 variables, siendo solamente una de ellas la variable dependiente: *SOFA*.
+
+```{r}
+dim(data_SOFA)
+```
+
+## **2. VALIDACIÓN CRUZADA**
+
+Antes de comenzar con los algoritmos de clasificación y regresión, vamos a aplicar validación cruzada con ayuda de la función **trainControl** del paquete Caret:
+
+
+```{r}
+CV_SOFA <- trainControl(method = "cv", 
+                           number = 10, 
+                           summaryFunction = twoClassSummary, 
+                           classProbs = TRUE,
+                           savePredictions = TRUE,
+                           verbose = FALSE)
+                                
+```
+
+
+## **3. ENTRENAMIENTO Y TEST**
+
+A continuación, dividiremos nuestro dataset en dos conjuntos: entrenamiento y test. En este caso, vamos a establecer un 70% para training y un 30% para test.
+
+```{r}
+set.seed(14)
+
+indice <- createDataPartition(data_SOFA$SOFA.score, p=0.70, list = FALSE)  # Partición de los datos
+train_SOFA <- data_SOFA[indice,]  # Dataset de entrenamiento
+test_SOFA <- data_SOFA[-indice,]  # Dataset de test
+```
+
+
+
+## **4. ÁRBOL DE DECISIÓN**
+
+
+En primer lugar, entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+SOFA_tree_train <- train(SOFA.score ~ ., 
+                  data = train_SOFA, 
+                  method = "rpart2", 
+                  trControl = trainControl(method = "cv"))
+```
+
+
+Representamos gráficamente el árbol de decisión resultante del entrenamiento:
+
+
+```{r}
+suppressMessages(library(rattle))
+```
+
+
+```{r}
+fancyRpartPlot(SOFA_tree_train$finalModel)
+```
+
+Utilizamos el modelo para predecir sobre el conjunto de test:
+
+```{r}
+SOFA_tree_predict <- predict(SOFA_tree_train, test_SOFA)
+```
+
+
+Calculamos el rendimiento del algoritmo:
+
+
+```{r}
+postResample(pred = SOFA_tree_predict, obs = test_SOFA$SOFA.score)
+```
+
+
+```{r}
+plot(test_SOFA$SOFA.score, SOFA_tree_predict)
+```
+
+
+#### **5. RANDOM FOREST**
+
+
+En primer lugar, entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+SOFA_forest_train <- train(SOFA.score ~ ., 
+                  data = train_SOFA, 
+                  method = "rf", 
+                  trControl = trainControl(method = "cv"))
+```
+
+
+```{r}
+SOFA_forest_train
+```
+
+
+
+Utilizamos el modelo para predecir sobre el conjunto de test:
+
+```{r}
+SOFA_forest_predict <- predict(SOFA_forest_train, test_SOFA)
+```
+
+
+Calculamos el rendimiento del algoritmo:
+
+```{r}
+postResample(pred = SOFA_forest_predict, obs = test_SOFA$SOFA.score)
+```
+
+
+
+#### **6. kNN**
+
+Normalizamos los datos:
+
+```{r}
+normalizar <- function(variable){
+  (variable - min(variable)) / (max(variable) - min(variable))
+}
+```
+
+
+```{r}
+datos_SOFA_normalizados <- data_SOFA
+```
+
+
+```{r}
+datos_SOFA_normalizados$Age <- normalizar(datos_SOFA_normalizados$Age)  # Normalización: EDAD
+datos_SOFA_normalizados$Initial.PCT.value <- normalizar(datos_SOFA_normalizados$Initial.PCT.value)  # Normalización: PCT VALUE
+datos_SOFA_normalizados$PaO2 <- normalizar(datos_SOFA_normalizados$PaO2)  # Normalización: PaO2
+datos_SOFA_normalizados$FiO2 <- normalizar(datos_SOFA_normalizados$FiO2)  # Normalización: FiO2
+datos_SOFA_normalizados$Platelets <- normalizar(datos_SOFA_normalizados$Platelets)  # Normalización: PLATELETS
+datos_SOFA_normalizados$Bilirubin <- normalizar(datos_SOFA_normalizados$Bilirubin)  # Normalización: BILIRUBIN
+datos_SOFA_normalizados$GCS <- normalizar(datos_SOFA_normalizados$GCS)  # Normalización: GCS
+datos_SOFA_normalizados$MAP <- normalizar(datos_SOFA_normalizados$MAP)  # Normalización: MAP
+datos_SOFA_normalizados$Creatinine <- normalizar(datos_SOFA_normalizados$Creatinine)  # Normalización: CREATININE
+datos_SOFA_normalizados$UOP <- normalizar(datos_SOFA_normalizados$UOP)  # Normalización: UOP
+datos_SOFA_normalizados$LOS <- normalizar(datos_SOFA_normalizados$LOS)  # Normalización: LOS
+
+```
+
+
+```{r}
+train_SOFA_knn <- datos_SOFA_normalizados[indice,]
+test_SOFA_knn <- datos_SOFA_normalizados[-indice,]
+```
+
+
+En primer lugar, entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+SOFA_knn_train <- train(SOFA.score ~ ., 
+                  data = train_SOFA_knn, 
+                  method = "knn", 
+                  trControl = trainControl(method = "cv"),
+                  tuneLength = 20)
+```
+
+
+```{r}
+SOFA_knn_train
+```
+
+
+
+
+```{r}
+plot(SOFA_knn_train)
+```
+
+
+Utilizamos el modelo para predecir sobre el conjunto de test:
+
+```{r}
+SOFA_knn_predict <- predict(SOFA_knn_train, test_SOFA_knn)
+```
+
+
+
+```{r}
+plot(test_SOFA$SOFA.score, SOFA_knn_predict)
+```
+
+
+Calculamos el rendimiento del algoritmo:
+
+```{r}
+postResample(pred = SOFA_knn_predict, obs = test_SOFA$SOFA.score)
+```
+
+
+## **7. MÁQUINA DE VECTORES DE SOPORTE LINEAL**
+
+
+En primer lugar, entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+sofa_SVM_train <- train(SOFA.score ~ ., 
+                  data = train_SOFA, 
+                  method = "svmLinear", 
+                  trControl = trainControl(method = "cv"),
+                  tuneLength = 20)
+```
+
+
+```{r}
+sofa_SVM_train
+```
+
+Utilizamos el modelo para predecir sobre el conjunto de test:
+
+```{r}
+sofa_SVM_predict <- predict(sofa_SVM_train, test_SOFA)
+```
+
+
+
+```{r}
+plot(test_SOFA$SOFA.score, sofa_SVM_predict)
+```
+
+
+
+Calculamos el rendimiento del algoritmo:
+
+```{r}
+postResample(pred = sofa_SVM_predict, obs = test_SOFA$SOFA.score)
+```
+
+
+
+## **8. MÁQUINA DE VECTORES DE SOPORTE KERNEL**
+
+
+En primer lugar, entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+sofa_kernel_train <- train(SOFA.score ~ ., 
+                  data = train_SOFA, 
+                  method = "svmRadial", 
+                  trControl = trainControl(method = "cv"),
+                  tuneLength = 20)
+```
+
+
+```{r}
+sofa_kernel_train
+```
+
+Utilizamos el modelo para predecir sobre el conjunto de test:
+
+```{r}
+sofa_kernel_predict <- predict(sofa_kernel_train, test_SOFA)
+```
+
+
+```{r}
+plot(test_SOFA$SOFA.score, sofa_kernel_predict)
+```
+
+
+Calculamos el rendimiento del algoritmo:
+
+```{r}
+postResample(pred = sofa_kernel_predict, obs = test_SOFA$SOFA.score)
+```
+
+
+

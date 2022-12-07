@@ -1,0 +1,414 @@
+---
+title: "TRABAJO FIN DE MÁSTER: DETECCIÓN TEMPRANA DE SEPSIS"
+output: html_notebook
+---
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+**Autor:** Jesús Guerrero Quirós
+
+**Tutores del trabajo:** Juan Antonio Nepomuceno Chamorro y Juan Antonio Nepomuceno Chamorro
+
+**Titulación:** Máster Oficial en Ingeniería Biomédica y Salud Digital
+
+**Centro:** Escuela Técnica Superior de Ingeniería Informática
+
+Universidad de Sevilla | Curso 2022/2023
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+
+# **VARIABLE: OUTCOME**
+
+En este notebook se llevará a cabo el estudio de la variable objetivo *Outcome*. Esta variable indica el estado final del paciente.
+
+Se trata de una variable categórica , que puede adquirir los siguientes valores:
+
++ 1 = El paciente mejora y es dado de alta
++ 2 = El paciente muere en planta
++ 3 = El paciente muere en UCI
++ 4 = El paciente va a la UCI, pero mejora y es dado de alta
+
+Al tratarse de una variable categórica, aplicaremos algoritmos de **clasificación.** Sin embargo, en el artículo que tomamos como referencia, esta variable fue transformada a una de tipo binaria, de forma que se alpicaron algoritmos de clasificación para determinar únicamente si el paciente sobrevivió o no.
+
+Por tanto, será necesario realizar una transformación de la variable.
+
+
+```{r}
+rm(list = ls())
+```
+
+
+```{r}
+library(AlgDesign)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(scales)
+library(powerMediation)
+library(readr)
+library(tidyverse)
+library(arules)
+library(caret)
+library(rpart)
+library(rattle)
+library(RColorBrewer)
+library(ROCR)
+```
+
+
+## **1. CARGA DE DATOS**
+
+Utilizaremos el dataset ya cargado del notebook de introducción, y realizaremos las modificaciones necesarias para avanzar.
+
+```{r}
+data_outcome <- dataset
+```
+
+
+Como en este notebook vamos a tomar la variable *Outcome* como variable dependiente, es conveniente eliminar las demás variables objetivo:
+
+
+```{r}
+data_outcome <- data_outcome %>%
+  mutate(SOFA.score = NULL) %>%
+  mutate(Vasopressors = NULL)
+```
+
+
+Así, nos queda un dataset con 36 variables, siendo solamente una de ellas la variable dependiente: *Outcome*.
+
+```{r}
+dim(data_outcome)
+```
+
+
+Cambiamos el valor de la variable dependiente por valores que no sean numéricos:
+
+```{r}
+data_outcome <- data_outcome %>%
+  mutate(Outcome = ifelse(Outcome==1, "Mejora_planta", 
+                          ifelse(Outcome==2, "Fallece_planta",
+                                 ifelse(Outcome==3, "Fallece_UCI", "Mejora_UCI"))))
+```
+
+
+
+## **2. VALIDACIÓN CRUZADA**
+
+Antes de comenzar con los algoritmos de clasificación y regresión, vamos a aplicar validación cruzada con ayuda de la función **trainControl** del paquete Caret:
+
+
+```{r}
+set.seed(14)
+
+CV_outcome <- trainControl(method = "cv", 
+                           number = 10, 
+                           summaryFunction = defaultSummary, 
+                           savePredictions = TRUE,
+                           verbose = FALSE)
+                                
+```
+
+
+## **3. ENTRENAMIENTO Y TEST**
+
+A continuación, dividiremos nuestro dataset en dos conjuntos: entrenamiento y test. En este caso, vamos a establecer un 70% para training y un 30% para test.
+
+```{r}
+set.seed(14)
+
+indice <- createDataPartition(data_outcome$Outcome, p=0.70, list = FALSE)  # Partición de los datos
+train_outcome <- data_outcome[indice,]  # Dataset de entrenamiento
+test_outcome <- data_outcome[-indice,]  # Dataset de test
+```
+
+
+
+## **4. ÁRBOL DE DECISIÓN**
+
+En primer lugar, entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+outcome_tree_train <- train(as.factor(Outcome) ~ ., 
+                  data = train_outcome, 
+                  method = "rpart", 
+                  trControl = CV_outcome)
+```
+
+
+Representamos gráficamente el árbol de decisión resultante del entrenamiento:
+
+
+```{r}
+suppressMessages(library(rattle))
+```
+
+
+```{r}
+fancyRpartPlot(outcome_tree_train$finalModel)
+```
+
+Utilizamos el modelo para predecir sobre el conjunto de test:
+
+```{r}
+outcome_tree_predict <- predict(outcome_tree_train, test_outcome)
+```
+
+
+Creamos la matriz de confusión:
+
+```{r}
+matriz_tree_outcome <- confusionMatrix(as.factor(outcome_tree_predict), 
+                                            as.factor(test_outcome$Outcome), 
+                                            mode = "everything")
+matriz_tree_outcome
+```
+
+
+#### **5. RANDOM FOREST**
+
+En primer lugar, entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+outcome_forest_train <- train(as.factor(Outcome) ~ ., 
+                  data = train_outcome, 
+                  method = "rf", 
+                  trControl = CV_outcome)
+```
+
+
+Utilizamos el modelo para predecir sobre el conjunto de test:
+
+```{r}
+outcome_forest_predict <- predict(outcome_forest_train, test_outcome)
+```
+
+
+Creamos la matriz de confusión:
+
+```{r}
+matriz_forest_outcome <- confusionMatrix(as.factor(outcome_forest_predict), 
+                                            as.factor(test_outcome$Outcome), 
+                                            mode = "everything")
+matriz_forest_outcome
+```
+
+
+#### **6. k-NN**
+
+Para el algoritmo kNN (k vecinos más cercanos) es importante tener en cuenta una consideración previa: este algoritmo calcula la similitud entre variables usando la **distancia** entre las mismas. Esto significa que dichas distancias deben ser comparables, y los rangos de valores entre las variables deben ser similares.
+
+Esto implica que debemos **normalizar** algunas de nuestras variables para que funcione el algoritmo. Una manera de hacerlo es definiendo una función y luego aplicarla para las columnas correspondientes de nuestro dataset:
+
+
+```{r}
+normalizar <- function(variable){
+  (variable - min(variable)) / (max(variable) - min(variable))
+}
+```
+
+
+```{r}
+datos_normalizados <- data_outcome
+```
+
+
+```{r}
+datos_normalizados$Age <- normalizar(datos_normalizados$Age)  # Normalización: EDAD
+datos_normalizados$Initial.PCT.value <- normalizar(datos_normalizados$Initial.PCT.value)  # Normalización: PCT VALUE
+datos_normalizados$PaO2 <- normalizar(datos_normalizados$PaO2)  # Normalización: PaO2
+datos_normalizados$FiO2 <- normalizar(datos_normalizados$FiO2)  # Normalización: FiO2
+datos_normalizados$Platelets <- normalizar(datos_normalizados$Platelets)  # Normalización: PLATELETS
+datos_normalizados$Bilirubin <- normalizar(datos_normalizados$Bilirubin)  # Normalización: BILIRUBIN
+datos_normalizados$GCS <- normalizar(datos_normalizados$GCS)  # Normalización: GCS
+datos_normalizados$MAP <- normalizar(datos_normalizados$MAP)  # Normalización: MAP
+datos_normalizados$Creatinine <- normalizar(datos_normalizados$Creatinine)  # Normalización: CREATININE
+datos_normalizados$UOP <- normalizar(datos_normalizados$UOP)  # Normalización: UOP
+datos_normalizados$LOS <- normalizar(datos_normalizados$LOS)  # Normalización: LOS
+
+```
+
+
+Una vez realizada la normalización de las variables no binarias, vamos a dividir los datos en entrenamiento y test. Usamos la misma partición que para los algoritmos anteriores:
+
+```{r}
+train_outcome_kNN <- datos_normalizados[indice,]
+test_outcome_kNN <- datos_normalizados[-indice,]
+```
+
+
+Entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+outcome_knn_train <- train(as.factor(Outcome) ~ ., 
+                  data = train_outcome_kNN, 
+                  method = "knn", 
+                  trControl = CV_outcome,
+                  tuneLength = 20)
+```
+
+
+```{r}
+outcome_knn_train
+```
+
+Como podemos observar en el resultado del entrenamiento, la máxima precisión es **54,46%** y se obtiene para **k=43**. Vamos a representarlo gráficamente:
+
+
+```{r}
+plot(outcome_knn_train)
+```
+
+
+Utilizamos el modelo para predecir sobre el conjunto de test:
+
+```{r}
+outcome_knn_predict <- predict(outcome_knn_train, test_outcome_kNN)
+```
+
+
+Creamos la matriz de confusión:
+
+```{r}
+matriz_knn_outcome <- confusionMatrix(as.factor(outcome_knn_predict), 
+                                            as.factor(test_outcome$Outcome), 
+                                            mode = "everything")
+matriz_knn_outcome
+```
+
+
+#### **7. NAIVE-BAYES**
+
+Instalamos las librerías necesarias para aplicar el algoritmo:
+
+```{r}
+library("klaR")
+```
+
+
+```{r}
+library(e1071)
+```
+
+
+Entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+outcome_nb_train <- train(as.factor(Outcome) ~ .,
+                          data = train_outcome,
+                          method = "nb", 
+                          trControl = CV_outcome)
+```
+
+A continuación podemos ver el resultado del entrenamiento:
+
+```{r}
+outcome_nb_train
+```
+
+```{r}
+outcome_nb_predict <- predict(outcome_nb_train, test_outcome)
+```
+
+Creamos la matriz de confusión:
+
+```{r}
+matriz_nb_outcome <- confusionMatrix(as.factor(outcome_nb_predict), 
+                                            as.factor(test_outcome$Outcome), 
+                                            mode = "everything")
+matriz_nb_outcome
+```
+
+
+## **8. MÁQUINA DE VECTORES DE SOPORTE LINEAL**
+
+
+En primer lugar, entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+outcome_SVM_train <- train(as.factor(Outcome) ~ ., 
+                  data = train_outcome, 
+                  method = "svmLinear", 
+                  trControl = CV_outcome,
+                  tuneLength = 20)
+```
+
+
+```{r}
+outcome_SVM_train
+```
+
+Utilizamos el modelo para predecir sobre el conjunto de test:
+
+```{r}
+outcome_SVM_predict <- predict(outcome_SVM_train, test_outcome)
+```
+
+
+
+Creamos la matriz de confusión:
+
+```{r}
+matriz_SVM_outcome <- confusionMatrix(as.factor(outcome_SVM_predict), 
+                                            as.factor(test_outcome$Outcome), 
+                                            mode = "everything")
+matriz_SVM_outcome
+```
+
+
+## **9. MÁQUINA DE VECTORES DE SOPORTE KERNEL**
+
+
+En primer lugar, entrenamos nuestro modelo:
+
+
+```{r}
+set.seed(14)
+
+outcome_kernel_train <- train(as.factor(Outcome) ~ ., 
+                  data = train_outcome, 
+                  method = "svmRadial", 
+                  trControl = CV_outcome,
+                  tuneLength = 20)
+```
+
+
+```{r}
+outcome_kernel_train
+```
+
+Utilizamos el modelo para predecir sobre el conjunto de test:
+
+```{r}
+outcome_kernel_predict <- predict(outcome_kernel_train, test_outcome)
+```
+
+
+
+Creamos la matriz de confusión:
+
+```{r}
+matriz_kernel_outcome <- confusionMatrix(as.factor(outcome_kernel_predict), 
+                                            as.factor(test_outcome$Outcome), 
+                                            mode = "everything")
+matriz_kernel_outcome
+```
+
+
+
